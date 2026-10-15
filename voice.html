@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice input</title>
+<!--
+  Voice input helper for BHG Leads Tracker (v1.55).
+  Google Apps Script pages run inside a frame that the browser will not let use the microphone,
+  so the tracker opens THIS page in a small window. Here the browser can ask for the microphone
+  and listen. The words are sent back to the tracker window with postMessage and are not kept
+  anywhere. No account, key or server is involved: the browser's own speech recognition does the work.
+  Address parameters: ui = screen language (en, ms, zh), rl = spoken language code (for example en-US),
+  origin = the address of the tracker page that opened this window (the words are sent only there).
+-->
+<style>
+  :root { --bg: #f6f4ef; --ink: #1a1a1a; --brass: #b8892b; --red: #dc2626; --line: rgba(0,0,0,.15); }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1b1b1b; --ink: #f2f0ea; --line: rgba(255,255,255,.2); } }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; font-size: 13px; opacity: .75; }
+  #mic { display: flex; align-items: center; justify-content: center; width: 64px; height: 64px; margin: 8px auto 6px; border-radius: 50%; border: 2px solid var(--line); background: transparent; color: inherit; cursor: pointer; }
+  #mic.on { background: var(--red); border-color: var(--red); color: #fff; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,.45); } 50% { box-shadow: 0 0 0 12px rgba(220,38,38,0); } }
+  @media (prefers-reduced-motion: reduce) { #mic.on { animation: none; } }
+  #state { text-align: center; font-size: 13px; min-height: 20px; margin-bottom: 8px; }
+  #text { width: 100%; min-height: 110px; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: transparent; color: inherit; font: inherit; resize: vertical; }
+  .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  button.b { border: 1px solid var(--line); background: transparent; color: inherit; border-radius: 999px; padding: 8px 18px; font: inherit; cursor: pointer; }
+  button.main { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  #err { color: var(--red); font-size: 13px; margin-top: 8px; min-height: 18px; }
+</style>
+</head>
+<body>
+<h1 id="title">Voice input</h1>
+<p id="hint">Allow the microphone if the browser asks, then speak. Your words appear in the box and in the form.</p>
+<button id="mic" type="button" aria-label="Start or stop listening">
+  <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg>
+</button>
+<div id="state" role="status" aria-live="polite"></div>
+<textarea id="text" aria-label="Spoken text"></textarea>
+<div id="err" role="alert"></div>
+<div class="row"><button id="cancel" class="b" type="button">Cancel</button><button id="done" class="b main" type="button">Done</button></div>
+<script>
+(function () {
+  var Q = new URLSearchParams(location.search);
+  var UI = { en: {
+      title: 'Voice input', hint: 'Allow the microphone if the browser asks, then speak. Your words appear in the box and in the form.', listening: 'Listening… click the microphone to pause', paused: 'Paused. Click the microphone to continue',
+      cancel: 'Cancel', done: 'Done', unsupported: 'This browser does not support voice input. Use Chrome, Edge or Safari.', blocked: 'The microphone is blocked. Allow it for this window (the icon next to the address), then click the microphone.',
+      nomic: 'No microphone was found.', network: 'Voice input needs an internet connection.', lang: 'This browser cannot understand the chosen spoken language.', noopener: 'This window must be opened from BHG Leads Tracker.' },
+    ms: { title: 'Input suara', hint: 'Benarkan mikrofon jika pelayar bertanya, kemudian bercakap. Kata-kata anda muncul dalam kotak dan dalam borang.', listening: 'Sedang mendengar… klik mikrofon untuk jeda', paused: 'Dijeda. Klik mikrofon untuk sambung',
+      cancel: 'Batal', done: 'Selesai', unsupported: 'Pelayar ini tidak menyokong input suara. Gunakan Chrome, Edge atau Safari.', blocked: 'Mikrofon disekat. Benarkan untuk tetingkap ini (ikon di sebelah alamat), kemudian klik mikrofon.',
+      nomic: 'Tiada mikrofon dijumpai.', network: 'Input suara memerlukan sambungan internet.', lang: 'Pelayar ini tidak memahami bahasa lisan yang dipilih.', noopener: 'Tetingkap ini mesti dibuka daripada BHG Leads Tracker.' },
+    zh: { title: '语音输入', hint: '如果浏览器询问，请允许使用麦克风，然后开始说话。您的话会显示在此框和表单中。', listening: '正在聆听… 点击麦克风暂停', paused: '已暂停。点击麦克风继续',
+      cancel: '取消', done: '完成', unsupported: '此浏览器不支持语音输入。请使用 Chrome、Edge 或 Safari。', blocked: '麦克风被阻止。请为此窗口允许（地址栏旁的图标），然后点击麦克风。',
+      nomic: '未找到麦克风。', network: '语音输入需要网络连接。', lang: '此浏览器无法识别所选口语语言。', noopener: '必须从 BHG Leads Tracker 打开此窗口。' } };
+  var T = UI[Q.get('ui')] || UI.en;
+  var $ = function (id) { return document.getElementById(id); };
+  $('title').textContent = T.title; $('hint').textContent = T.hint; $('cancel').textContent = T.cancel; $('done').textContent = T.done; document.title = T.title;
+  document.documentElement.lang = UI[Q.get('ui')] ? Q.get('ui') : 'en';
+
+  // The words go only to the page that opened this window, and only if it is a Google Apps Script page (or the page given for testing on this computer).
+  var origin = Q.get('origin') || '';
+  var okOrigin = /^https:\/\/[a-z0-9-]+\.googleusercontent\.com$/.test(origin) || /^https:\/\/script\.google\.com$/.test(origin) || /^http:\/\/localhost(:\d+)?$/.test(origin) || /^http:\/\/127\.0\.0\.1(:\d+)?$/.test(origin);
+  var target = origin === 'null' ? '*' : origin;
+  var id = Q.get('id') || '';
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var rec = null, wanted = false, done = '', fatal = false;
+
+  function send(text, finished) {
+    if (!window.opener || !okOrigin) return;
+    try { window.opener.postMessage({ src: 'bhg-voice', id: id, text: text, done: !!finished }, target); } catch (e) { /* the tracker window was closed */ }
+  }
+  function say(msg) { $('err').textContent = msg || ''; }
+  function ui(on) { $('mic').classList.toggle('on', on); $('state').textContent = on ? T.listening : T.paused; }
+  function start() {
+    if (!SR) { say(T.unsupported); return; }
+    say('');
+    rec = new SR();
+    var l = Q.get('rl'); if (l && /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(l)) rec.lang = l;
+    rec.continuous = true; rec.interimResults = true;
+    rec.onresult = function (e) {
+      var interim = '';
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        var r = e.results[i], t = r[0] ? r[0].transcript : '';
+        if (r.isFinal) done += t; else interim += t;
+      }
+      var all = (done + interim).replace(/^\s+/, '');
+      $('text').value = all; send(all, false);
+    };
+    rec.onerror = function (e) {
+      var c = e && e.error;
+      if (c === 'not-allowed' || c === 'service-not-allowed') { fatal = true; say(T.blocked); }
+      else if (c === 'audio-capture') { fatal = true; say(T.nomic); }
+      else if (c === 'network') { fatal = true; say(T.network); }
+      else if (c === 'language-not-supported') { fatal = true; say(T.lang); }
+    };
+    rec.onend = function () {
+      // the browser stops after a pause in speech; carry on while the person has not paused or finished
+      if (wanted && !fatal) { try { rec.start(); return; } catch (e) { /* fall through */ } }
+      wanted = false; ui(false);
+    };
+    try { wanted = true; fatal = false; rec.start(); ui(true); } catch (e) { wanted = false; ui(false); }
+  }
+  function pause() { wanted = false; try { rec.stop(); } catch (e) { /* not running */ } ui(false); }
+  function finish(keep) {
+    wanted = false; try { rec && rec.stop(); } catch (e) { /* not running */ }
+    send(keep ? $('text').value : '', true);
+    window.close();
+  }
+  $('mic').addEventListener('click', function () { if (wanted) pause(); else { done = $('text').value ? $('text').value + ' ' : ''; start(); } });
+  $('text').addEventListener('input', function () { done = $('text').value; send($('text').value, false); });
+  $('done').addEventListener('click', function () { finish(true); });
+  $('cancel').addEventListener('click', function () { finish(false); });
+  window.addEventListener('beforeunload', function () { wanted = false; try { rec && rec.stop(); } catch (e) { /* closing */ } });
+  if (!window.opener || !okOrigin) { say(T.noopener); $('mic').disabled = true; $('done').disabled = true; }
+  else if (!SR) { say(T.unsupported); }
+  else { start(); }
+})();
+</script>
+</body>
+</html>
